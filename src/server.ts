@@ -183,6 +183,6 @@ app.get("/api/sessions/:code", (req, res) => {
   return res.status(200).json({ session });
 });
 
-app.listen(port, "127.0.0.1", () => {
-  console.log(`OrderWise AI running at http://127.0.0.1:${port}`);
+app.listen(port, "0.0.0.0", () => {
+  console.log(`OrderWise AI running on port ${port}`);
 });
