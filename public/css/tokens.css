@@ -1,0 +1,48 @@
+/* Design tokens. Colours are named after the kitchen and the hostel mess, not the UI role. */
+:root {
+  /* Surfaces */
+  --steel: #e6ebee; /* page, like a stainless tiffin */
+  --tin: #f6f8f9; /* raised panels */
+  --line: #bfc9d0;
+
+  /* Text */
+  --ink: #151c22;
+  --ink-soft: #445260;
+
+  /* Interactive: indigo, the colour of a mess-hall rubber stamp */
+  --stamp: #2b3a8f;
+  --stamp-soft: #dde1f5;
+
+  /* Money and member colours */
+  --turmeric: #e9b10e;
+  --turmeric-soft: #fbefc2;
+  --beetroot: #9b2a4a;
+  --teal: #14707a;
+  --tamarind: #7a4b2a;
+
+  /* Meaning */
+  --ok: #1f6b43;
+  --ok-soft: #dcefe4;
+  --bad: #9b2a4a;
+  --veg: #2d7a4f;
+  --nonveg: #9b2a4a;
+
+  /* Type */
+  --font-display: "Bricolage Grotesque Variable", "Segoe UI", system-ui, sans-serif;
+  --font-body: "Atkinson Hyperlegible Next Variable", "Segoe UI", system-ui, sans-serif;
+
+  /* Scale */
+  --text-s: 0.875rem;
+  --text-m: 1.0625rem;
+  --text-l: 1.25rem;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+  --radius-s: 4px;
+  --radius-m: 8px;
+  --focus: 3px solid var(--stamp);
+}
