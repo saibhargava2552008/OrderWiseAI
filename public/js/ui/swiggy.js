@@ -90,10 +90,19 @@ export async function initSwiggy() {
   async function disconnect(button) {
     button.disabled = true;
     try {
-      await api("/api/swiggy/disconnect", "POST");
-      showToast("Signed out of Swiggy in OrderWise. Your Swiggy session itself isn't revoked.", { tone: "info", duration: 10000 });
+      const result = await api("/api/swiggy/disconnect", "POST");
+      if (result.ok && result.body?.swiggySessionRevoked === true) {
+        showToast("Signed out of OrderWise and Swiggy.", { tone: "success", duration: 10000 });
+      } else if (result.ok && result.body?.ok === true) {
+        showToast("Signed out of OrderWise. Swiggy couldn't confirm revocation, so check your Swiggy account if needed.", {
+          tone: "info",
+          duration: 10000,
+        });
+      } else {
+        showToast("Couldn't confirm sign-out. Refresh the page and check your connection.", { tone: "info", duration: 10000 });
+      }
     } catch {
-      showToast("Couldn't sign out. Try again.", { tone: "info" });
+      showToast("Couldn't confirm sign-out. Refresh the page and check your connection.", { tone: "info", duration: 10000 });
     }
     await refresh();
   }
