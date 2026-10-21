@@ -386,6 +386,20 @@ describe("verifying with a real MCP request", () => {
     assert.deepEqual(refreshes.at(-1)?.body, { grant_type: "refresh_token", refresh_token: "RT-2" });
   });
 
+  it("requires reauthorization when refresh succeeds without a rotated refresh token", async () => {
+    await signIn();
+    swiggy.validAccessTokens = new Set(["AT-2"]);
+    swiggy.tokenReply = (body) =>
+      body.grant_type === "refresh_token"
+        ? { status: 200, body: { access_token: "AT-2", token_type: "Bearer", expires_in: 432000 } }
+        : { status: 400, body: {} };
+
+    const res = await browser.post("/api/swiggy/verify");
+    assert.equal(res.status, 401);
+    assert.deepEqual(JSON.parse(res.text), { error: "reauthorization_required" });
+    assert.deepEqual(await browser.status(), { configured: true, authorized: false, verified: false });
+  });
+
   it("refreshes ahead of expiry when 60 seconds or less remain", async () => {
     await signIn();
     app.clock.advance(432000 * 1000 - 59_000);
