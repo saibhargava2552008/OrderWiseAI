@@ -24,6 +24,7 @@ export class FakeSwiggy {
     status: 200,
     body: { access_token: "AT-1", refresh_token: "RT-1", token_type: "Bearer", expires_in: 432000, scope: "mcp:tools" },
   });
+  logoutReply: () => Reply = () => ({ status: 200, body: { ok: true } });
   /** Access tokens the fake MCP server accepts. */
   validAccessTokens = new Set<string>(["AT-1"]);
 
@@ -66,6 +67,7 @@ export class FakeSwiggy {
 
     if (req.method === "POST" && path === "/auth/register") return this.send(res, this.registerReply());
     if (req.method === "POST" && path === "/auth/token") return this.send(res, this.tokenReply(body as Record<string, unknown>));
+    if (req.method === "POST" && path === "/auth/logout") return this.send(res, this.logoutReply());
 
     if (path === "/food") {
       const auth = req.headers.authorization ?? "";
