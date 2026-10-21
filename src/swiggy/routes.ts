@@ -9,6 +9,7 @@ import {
   needsRefresh,
   refreshTokens,
   registerClient,
+  logoutSwiggySession,
   type FetchLike,
 } from "./oauth.js";
 import { codeChallengeFor, createCodeVerifier, randomToken, safeEqual } from "./pkce.js";
@@ -197,7 +198,12 @@ export function createSwiggyRouter(deps: SwiggyDeps): Router {
 
     let tokens: Tokens;
     try {
-      tokens = await exchangeCode(config, { code, codeVerifier: pending.verifier }, now(), fetchImpl);
+      tokens = await exchangeCode(
+        config,
+        { code, codeVerifier: pending.verifier, clientId: pending.clientId },
+        now(),
+        fetchImpl,
+      );
     } catch (e) {
       log("swiggy_auth_failed", {
         reason: "token_exchange",
@@ -291,17 +297,25 @@ export function createSwiggyRouter(deps: SwiggyDeps): Router {
   });
 
   // ---- POST /api/swiggy/disconnect --------------------------------------------------------
-  router.post("/api/swiggy/disconnect", requireSameOrigin, (req, res) => {
+  router.post("/api/swiggy/disconnect", requireSameOrigin, async (req, res) => {
     noStore(res);
+    if (!config.enabled) return void res.status(503).json({ error: "not_configured" });
+
     const session = currentSession(req);
+    const accessToken = session?.tokens?.accessToken;
+
+    // Drop local credentials immediately, regardless of whether upstream revocation succeeds.
     if (session) store.deleteSession(session.id);
-    // Clears the sign-in held by this app. Swiggy's /auth/logout is not called, because the docs
-    // do not describe its request format. The Swiggy-side session stays valid until it expires.
     res.append(
       "Set-Cookie",
       `${cookieName}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure ? "; Secure" : ""}`,
     );
-    res.json({ ok: true, swiggySessionRevoked: false });
+
+    const swiggySessionRevoked = accessToken
+      ? await logoutSwiggySession(config, accessToken, fetchImpl)
+      : false;
+    if (accessToken && !swiggySessionRevoked) log("swiggy_logout_failed");
+    res.json({ ok: true, swiggySessionRevoked });
   });
 
   // Last resort for this router: a fixed message, never the underlying error.
