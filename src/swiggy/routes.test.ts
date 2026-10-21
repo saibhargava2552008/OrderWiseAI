@@ -125,9 +125,10 @@ describe("callback success", () => {
     const [call] = swiggy.calls("/auth/token");
     assert.equal(call.headers["content-type"], "application/json");
     const body = call.body as Record<string, string>;
-    assert.deepEqual(Object.keys(body).sort(), ["code", "code_verifier", "grant_type", "redirect_uri"]);
+    assert.deepEqual(Object.keys(body).sort(), ["client_id", "code", "code_verifier", "grant_type", "redirect_uri"]);
     assert.equal(body.grant_type, "authorization_code");
     assert.equal(body.code, "AUTH-CODE-1");
+    assert.equal(body.client_id, "test-client");
     assert.equal(body.redirect_uri, REDIRECT_URI);
     const challenge = createHash("sha256").update(body.code_verifier).digest("base64url");
     assert.equal(challenge, params.get("code_challenge"));
@@ -466,13 +467,27 @@ describe("verifying with a real MCP request", () => {
 });
 
 describe("disconnect", () => {
-  it("forgets the sign-in, clears the cookie, and does not claim Swiggy revoked anything", async () => {
+  it("revokes the Swiggy session, forgets local sign-in, and clears the cookie", async () => {
     await signIn();
     const res = await browser.post("/api/swiggy/disconnect");
     assert.equal(res.status, 200);
-    assert.deepEqual(JSON.parse(res.text), { ok: true, swiggySessionRevoked: false });
+    assert.deepEqual(JSON.parse(res.text), { ok: true, swiggySessionRevoked: true });
     assert.ok(res.setCookie.some((c) => /__Host-ow_sid=;.*Max-Age=0/.test(c)));
     assert.deepEqual(await browser.status(), { configured: true, authorized: false, verified: false });
-    assert.equal(swiggy.calls("/auth/logout").length, 0, "no undocumented logout request is sent");
+    const [logout] = swiggy.calls("/auth/logout");
+    assert.equal(logout.method, "POST");
+    assert.equal(logout.headers.authorization, "Bearer AT-1");
+    assert.equal(logout.body, undefined);
+  });
+
+  it("still clears local credentials when Swiggy logout fails", async () => {
+    await signIn();
+    swiggy.logoutReply = () => ({ status: 503, body: { error: "server_error" } });
+    const res = await browser.post("/api/swiggy/disconnect");
+    assert.equal(res.status, 200);
+    assert.deepEqual(JSON.parse(res.text), { ok: true, swiggySessionRevoked: false });
+    assert.deepEqual(await browser.status(), { configured: true, authorized: false, verified: false });
+    assert.ok(app.logs.some((entry) => entry.includes("swiggy_logout_failed")));
+    assertNoSecrets("logs", app.logs.join("\n"), ["AT-1", "RT-1"]);
   });
 });
