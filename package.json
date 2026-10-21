@@ -4,7 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node --import tsx --test \"src/**/*.test.ts\" \"tests/**/*.test.mjs\"",
+    "swiggy:register": "tsx src/swiggy/register-cli.ts",
     "dev": "tsx watch src/server.ts",
     "build": "tsc --noEmit",
     "start": "tsx src/server.ts"
