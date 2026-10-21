@@ -128,13 +128,17 @@ const tokenSchema = z.object({
   scope: z.string().optional(),
 });
 
-function toTokens(payload: unknown, now: number, previous?: Tokens): Tokens {
+function toTokens(payload: unknown, now: number, previous?: Tokens, requireNewRefreshToken = false): Tokens {
   const parsed = tokenSchema.safeParse(payload);
   if (!parsed.success) throw new SwiggyAuthError("bad_response");
   const t = parsed.data;
+
+  // Swiggy documents refresh tokens as rotating: the old token must be discarded after refresh.
+  // Never report a successful refresh if the response omitted the replacement token.
+  if (requireNewRefreshToken && !t.refresh_token) throw new SwiggyAuthError("bad_response");
+
   return {
     accessToken: t.access_token,
-    // Refresh tokens rotate. If a reply ever omits one, keep the last known value.
     refreshToken: t.refresh_token ?? previous?.refreshToken,
     expiresAt: now + t.expires_in * 1000,
     scope: t.scope ?? previous?.scope,
@@ -173,7 +177,7 @@ export async function refreshTokens(
     { grant_type: "refresh_token", refresh_token: current.refreshToken },
     fetchImpl,
   );
-  return toTokens(payload, now, current);
+  return toTokens(payload, now, current, true);
 }
 
 /** Docs: refresh when 60 seconds or less remain. */
