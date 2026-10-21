@@ -147,7 +147,7 @@ function toTokens(payload: unknown, now: number, previous?: Tokens, requireNewRe
 
 export async function exchangeCode(
   config: SwiggyConfig,
-  params: { code: string; codeVerifier: string },
+  params: { code: string; codeVerifier: string; clientId: string },
   now: number,
   fetchImpl: FetchLike = fetch,
 ): Promise<Tokens> {
@@ -157,11 +157,36 @@ export async function exchangeCode(
       grant_type: "authorization_code",
       code: params.code,
       code_verifier: params.codeVerifier,
+      client_id: params.clientId,
       redirect_uri: config.redirectUri,
     },
     fetchImpl,
   );
   return toTokens(payload, now);
+}
+
+/**
+ * Revokes the delegated user's Swiggy session. Logout has no JSON body in Swiggy's
+ * delegated-auth contract; never expose response bodies or tokens to callers/logs.
+ * A false result means Swiggy did not confirm revocation, but callers should still
+ * discard their local copy of the token.
+ */
+export async function logoutSwiggySession(
+  config: SwiggyConfig,
+  accessToken: string,
+  fetchImpl: FetchLike = fetch,
+): Promise<boolean> {
+  try {
+    const response = await fetchImpl(`${config.swiggyOrigin}/auth/logout`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+      redirect: "error",
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
 }
 
 /** Refreshes the access token. The previous refresh token must be discarded; the reply carries a new one. */
