@@ -5,14 +5,15 @@ import type { Tokens } from "./store.js";
 /**
  * Swiggy OAuth 2.1 + PKCE client.
  *
- * Every endpoint, parameter and body below comes from the Swiggy Builders authenticate docs
- * (https://mcp.swiggy.com/builders/docs/start/authenticate/):
+ * This is the delegated platform flow documented by Swiggy Builders:
+ *   https://mcp.swiggy.com/builders/docs/start/enterprise/delegated-auth/
  *   GET  /auth/authorize   response_type, client_id, redirect_uri, code_challenge,
- *                          code_challenge_method, state, scope
- *   POST /auth/token       JSON body. Code exchange: grant_type, code, code_verifier, redirect_uri.
+ *                          code_challenge_method=S256, state, scope
+ *   POST /auth/token       Code exchange: grant_type, code, code_verifier, client_id, redirect_uri.
  *                          Refresh: grant_type, refresh_token, optional user_id.
+ *   POST /auth/logout      Authorization: Bearer <user access token>; no request body.
  *   POST /auth/register    Dynamic Client Registration (RFC 7591). The docs do not list the request
- *                          fields, so the standard RFC 7591 names are used. See registerClient().
+ *                          fields, so standard RFC 7591 names are used. See registerClient().
  *
  * Errors carry only a short code. Response bodies are never copied into messages or logs, because
  * a body could contain tokens.
