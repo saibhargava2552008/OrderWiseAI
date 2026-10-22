@@ -7,6 +7,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { loadSwiggyConfig, type SwiggyConfigResult } from "./config.js";
 import { createSwiggyRouter, type SwiggyDeps } from "./routes.js";
 import { SwiggyStore } from "./store.js";
+import type { SwiggyStoreAdapter } from "./store-adapter.js";
 
 export const APP_ORIGIN = "https://orderwiseai.onrender.com";
 export const REDIRECT_URI = `${APP_ORIGIN}/auth/swiggy/callback`;
@@ -20,7 +21,7 @@ export class FakeSwiggy {
   origin = "";
   requests: Recorded[] = [];
   registerReply: () => Reply = () => ({ status: 201, body: { client_id: "test-client" } });
-  tokenReply: (body: Record<string, unknown>) => Reply = () => ({
+  tokenReply: (body: Record<string, unknown>) => Reply | Promise<Reply> = () => ({
     status: 200,
     body: { access_token: "AT-1", refresh_token: "RT-1", token_type: "Bearer", expires_in: 432000, scope: "mcp:tools" },
   });
@@ -66,7 +67,7 @@ export class FakeSwiggy {
     this.requests.push({ method: req.method ?? "", path, headers: req.headers, body });
 
     if (req.method === "POST" && path === "/auth/register") return this.send(res, this.registerReply());
-    if (req.method === "POST" && path === "/auth/token") return this.send(res, this.tokenReply(body as Record<string, unknown>));
+    if (req.method === "POST" && path === "/auth/token") return this.send(res, await this.tokenReply(body as Record<string, unknown>));
     if (req.method === "POST" && path === "/auth/logout") return this.send(res, this.logoutReply());
 
     if (path === "/food") {
@@ -101,7 +102,7 @@ export type Harness = {
   close: () => Promise<void>;
   logs: string[];
   clock: Clock;
-  store: SwiggyStore;
+  store: SwiggyStoreAdapter;
 };
 
 export async function startApp(

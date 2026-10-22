@@ -387,6 +387,66 @@ describe("verifying with a real MCP request", () => {
     assert.deepEqual(refreshes.at(-1)?.body, { grant_type: "refresh_token", refresh_token: "RT-2" });
   });
 
+  it("serializes concurrent verification refreshes and rotates the refresh token only once", async () => {
+    await signIn();
+
+    let releaseRefresh!: () => void;
+    let signalRefreshStarted!: () => void;
+    const refreshStarted = new Promise<void>((resolve) => {
+      signalRefreshStarted = resolve;
+    });
+    const refreshGate = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+
+    swiggy.validAccessTokens = new Set(["AT-2"]);
+    swiggy.tokenReply = async (body) => {
+      if (body.grant_type !== "refresh_token") return { status: 400, body: {} };
+
+      signalRefreshStarted();
+      await refreshGate;
+      return {
+        status: 200,
+        body: {
+          access_token: "AT-2",
+          refresh_token: "RT-2",
+          token_type: "Bearer",
+          expires_in: 432000,
+        },
+      };
+    };
+
+    // Trigger proactive refresh with 30 seconds left on the original token.
+    app.clock.advance(432000 * 1000 - 30_000);
+
+    const first = browser.post("/api/swiggy/verify");
+    await refreshStarted;
+
+    // Pass the verify rate limit while the first refresh remains blocked.
+    app.clock.advance(3_001);
+    const second = browser.post("/api/swiggy/verify");
+
+    try {
+      // Let the second HTTP request reach the route and wait on the same session lock.
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    } finally {
+      releaseRefresh();
+    }
+
+    const results = await Promise.all([first, second]);
+    assert.deepEqual(results.map((res) => res.status), [200, 200]);
+
+    const refreshes = swiggy.calls("/auth/token").filter(
+      (call) => (call.body as Record<string, string>).grant_type === "refresh_token",
+    );
+    assert.equal(refreshes.length, 1, "concurrent requests must not refresh the same token twice");
+    assert.deepEqual(refreshes[0].body, {
+      grant_type: "refresh_token",
+      refresh_token: "RT-1",
+    });
+    assert.equal((await browser.status()).verified, true);
+  });
+
   it("requires reauthorization when refresh succeeds without a rotated refresh token", async () => {
     await signIn();
     swiggy.validAccessTokens = new Set(["AT-2"]);

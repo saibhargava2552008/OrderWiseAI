@@ -18,12 +18,19 @@ async function freePort() {
 async function startServer(extraEnv) {
   const port = await freePort();
   // Start from a clean environment so a developer's own .env or shell cannot change the result.
-  const env = { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, PORT: String(port), ...extraEnv };
+  const env = {
+  PATH: process.env.PATH,
+  SystemRoot: process.env.SystemRoot,
+  NODE_ENV: "test",
+  PERSISTENCE_MODE: "memory",
+  PORT: String(port),
+  ...extraEnv,
+};
   const child = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { env, stdio: ["ignore", "pipe", "pipe"] });
   let output = "";
   child.stdout.on("data", (d) => (output += d));
   child.stderr.on("data", (d) => (output += d));
-  const base = `http://localhost:${port}`;
+  const base = `http://127.0.0.1:${port}`;
   for (let i = 0; i < 100; i++) {
     try {
       if ((await fetch(`${base}/health`)).ok) return { base, child, output: () => output };

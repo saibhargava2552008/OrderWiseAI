@@ -1,3 +1,4 @@
+import type { SwiggyStoreAdapter } from "./store-adapter.js";
 import { Router, type NextFunction, type Request, type Response } from "express";
 import { z } from "zod";
 import { CALLBACK_PATH, type SwiggyConfig, type SwiggyConfigResult } from "./config.js";
@@ -17,7 +18,7 @@ import { SESSION_TTL_MS, SwiggyStore, type BrowserSession, type Tokens } from ".
 
 export type SwiggyDeps = {
   config: SwiggyConfigResult;
-  store?: SwiggyStore;
+  store?: SwiggyStoreAdapter;
   fetchImpl?: FetchLike;
   now?: () => number;
   /** Replaceable in tests. Defaults to a real `get_addresses` call on the Food MCP server. */
@@ -90,14 +91,14 @@ export function createSwiggyRouter(deps: SwiggyDeps): Router {
     return parseCookies(req.get("cookie"))[cookieName];
   }
 
-  function currentSession(req: Request): BrowserSession | undefined {
-    return store.getSession(readSessionId(req));
+  async function currentSession(req: Request): Promise<BrowserSession | undefined> {
+    return await store.getSession(readSessionId(req));
   }
 
-  function ensureSession(req: Request, res: Response): BrowserSession {
-    const existing = currentSession(req);
+  async function ensureSession(req: Request, res: Response): Promise<BrowserSession> {
+    const existing = await currentSession(req);
     if (existing) return existing;
-    const created = store.createSession();
+    const created = await store.createSession();
     setSessionCookie(res, created.id);
     return created;
   }
@@ -127,11 +128,11 @@ export function createSwiggyRouter(deps: SwiggyDeps): Router {
   let registering: Promise<string> | undefined;
   async function resolveClientId(cfg: SwiggyConfig): Promise<string> {
     if (cfg.clientId) return cfg.clientId;
-    const known = store.getClientId(cfg.redirectUri);
+    const known = await store.getClientId(cfg.redirectUri);
     if (known) return known;
     registering ??= registerClient(cfg, fetchImpl)
-      .then((id) => {
-        store.setClientId(cfg.redirectUri, id);
+      .then(async (id) => {
+        await store.setClientId(cfg.redirectUri, id);
         log("swiggy_client_registered");
         return id;
       })
@@ -146,7 +147,7 @@ export function createSwiggyRouter(deps: SwiggyDeps): Router {
     noStore(res);
     if (!config.enabled) return finish(res, "not_configured");
 
-    const session = ensureSession(req, res);
+    const session = await ensureSession(req, res);
     let clientId: string;
     try {
       clientId = await resolveClientId(config);
@@ -157,7 +158,7 @@ export function createSwiggyRouter(deps: SwiggyDeps): Router {
 
     const state = randomToken(32);
     const verifier = createCodeVerifier();
-    store.savePending({ state, verifier, sessionId: session.id, clientId, createdAt: now() });
+    await store.savePending({ state, verifier, sessionId: session.id, clientId, createdAt: now() });
     log("swiggy_auth_started");
     res.redirect(302, buildAuthorizeUrl(config, { clientId, codeChallenge: codeChallengeFor(verifier), state }));
   });
@@ -172,7 +173,7 @@ export function createSwiggyRouter(deps: SwiggyDeps): Router {
     const { code, state, error } = query.data;
 
     // The state is single-use: taking it removes it, so a replayed callback finds nothing.
-    const pending = store.takePending(state);
+    const pending = await store.takePending(state);
     if (!pending) {
       log("swiggy_auth_failed", { reason: "unknown_state" });
       return finish(res, "invalid_state");
@@ -184,7 +185,7 @@ export function createSwiggyRouter(deps: SwiggyDeps): Router {
       log("swiggy_auth_failed", { reason: "session_mismatch" });
       return finish(res, "invalid_state");
     }
-    const session = store.getSession(sessionId);
+    const session = await store.getSession(sessionId);
     if (!session || store.isExpired(pending)) {
       log("swiggy_auth_failed", { reason: "expired" });
       return finish(res, "expired");
@@ -213,16 +214,16 @@ export function createSwiggyRouter(deps: SwiggyDeps): Router {
       return finish(res, "exchange_failed");
     }
 
-    const fresh = store.rotateSession(session.id, tokens);
+    const fresh = await store.rotateSession(session.id, tokens);
     setSessionCookie(res, fresh.id);
     log("swiggy_auth_completed");
     finish(res, "authorized");
   });
 
   // ---- GET /api/swiggy/status -------------------------------------------------------------
-  router.get("/api/swiggy/status", (req, res) => {
+  router.get("/api/swiggy/status", async (req, res) => {
     noStore(res);
-    const session = currentSession(req);
+    const session = await currentSession(req);
     res.json({
       configured: config.enabled,
       authorized: Boolean(session?.tokens),
@@ -232,39 +233,92 @@ export function createSwiggyRouter(deps: SwiggyDeps): Router {
   });
 
   // ---- Token handling ---------------------------------------------------------------------
+
   class ReauthRequired extends Error {}
+  class SessionPersistenceError extends Error {}
+
 
   async function freshTokens(cfg: SwiggyConfig, session: BrowserSession, force = false): Promise<Tokens> {
-    const tokens = session.tokens;
-    if (!tokens) throw new ReauthRequired();
-    if (!force && !needsRefresh(tokens, now())) return tokens;
+    const original = session.tokens;
+    if (!original) throw new ReauthRequired();
 
-    session.refreshing ??= refreshTokens(cfg, tokens, now(), fetchImpl)
-      .then((next) => {
-        session.tokens = next;
-        return next;
-      })
-      .finally(() => {
-        session.refreshing = undefined;
-      });
+    if (!force && !needsRefresh(original, now())) {
+      return original;
+    }
+
     try {
-      return await session.refreshing;
+      return await store.withRefreshLock(session.id, async (lock) => {
+        // Another request may have refreshed tokens while we waited.
+        const latest = await store.getSession(session.id);
+        if (!latest?.tokens) throw new ReauthRequired();
+
+        const current = latest.tokens;
+        const changedSinceCallerRead =
+          current.accessToken !== original.accessToken ||
+          current.refreshToken !== original.refreshToken;
+
+        // Reuse newer tokens if another request refreshed them.
+        if (changedSinceCallerRead && !needsRefresh(current, now())) {
+          session.tokens = current;
+          return current;
+        }
+
+        if (!force && !needsRefresh(current, now())) {
+          session.tokens = current;
+          return current;
+        }
+
+        const next = await refreshTokens(cfg, current, now(), fetchImpl);
+
+        let saved: boolean;
+        try {
+          saved = await lock.saveRefreshedTokens(latest, current, next);
+        } catch {
+          throw new SessionPersistenceError();
+        }
+
+        if (!saved) {
+          const reloaded = await store.getSession(session.id);
+          if (reloaded?.tokens && !needsRefresh(reloaded.tokens, now())) {
+            session.tokens = reloaded.tokens;
+            return reloaded.tokens;
+          }
+          throw new SessionPersistenceError();
+        }
+
+        session.tokens = next;
+        session.lastSeen = latest.lastSeen;
+        return next;
+      });
     } catch (e) {
+      if (e instanceof ReauthRequired || e instanceof SessionPersistenceError) {
+        throw e;
+      }
+
       const code = e instanceof SwiggyAuthError ? e.code : "unknown";
       log("swiggy_refresh_failed", { code });
-      // Retrying a refresh only makes sense for a transient server error. Anything else needs a new sign-in.
-      if (code === "server_error" || code === "network") throw e;
-      session.tokens = undefined;
-      session.verifiedAt = undefined;
+
+      // Transient upstream failures should remain retryable (502).
+      if (
+        !(e instanceof SwiggyAuthError) ||
+        code === "server_error" ||
+        code === "network"
+      ) {
+        throw e;
+      }
+
+      // Keep the observed token snapshot intact.
+      // The verify route clears credentials only after an atomic token-match check.
       throw new ReauthRequired();
     }
   }
+
 
   // ---- POST /api/swiggy/verify ------------------------------------------------------------
   router.post("/api/swiggy/verify", requireSameOrigin, async (req, res) => {
     noStore(res);
     if (!config.enabled) return void res.status(503).json({ error: "not_configured" });
-    const session = currentSession(req);
+    const session = await currentSession(req);
     if (!session?.tokens) return void res.status(401).json({ error: "not_authorized" });
 
     if (session.lastVerifyAt && now() - session.lastVerifyAt < VERIFY_MIN_INTERVAL_MS) {
@@ -282,13 +336,27 @@ export function createSwiggyRouter(deps: SwiggyDeps): Router {
         tokens = await freshTokens(config, session, true);
         await verify(config, tokens.accessToken);
       }
-      session.verifiedAt = now();
+      await store.updateVerificationMetadata(session.id, {
+        verifiedAt: now(),
+        lastVerifyAt: session.lastVerifyAt,
+      });
       log("swiggy_mcp_verified");
       res.json({ ok: true, verified: true });
     } catch (e) {
       if (e instanceof ReauthRequired || (e instanceof SwiggyMcpError && e.code === "unauthorized")) {
-        session.tokens = undefined;
-        session.verifiedAt = undefined;
+        try {
+          const cleared = await store.clearTokensIfMatch(session.id, session.tokens!);
+          if (!cleared) {
+            // Another request may have refreshed the stored credentials.
+            return void res.status(409).json({ error: "session_changed_retry" });
+          }
+          await store.updateVerificationMetadata(session.id, {
+            lastVerifyAt: session.lastVerifyAt,
+          });
+        } catch {
+          log("swiggy_session_persistence_failed");
+          return void res.status(502).json({ error: "swiggy_unavailable" });
+        }
         return void res.status(401).json({ error: "reauthorization_required" });
       }
       log("swiggy_verify_failed", { code: e instanceof SwiggyMcpError ? e.code : e instanceof SwiggyAuthError ? e.code : "unknown" });
@@ -301,11 +369,11 @@ export function createSwiggyRouter(deps: SwiggyDeps): Router {
     noStore(res);
     if (!config.enabled) return void res.status(503).json({ error: "not_configured" });
 
-    const session = currentSession(req);
+    const session = await currentSession(req);
     const accessToken = session?.tokens?.accessToken;
 
     // Drop local credentials immediately, regardless of whether upstream revocation succeeds.
-    if (session) store.deleteSession(session.id);
+    if (session) await store.deleteSession(session.id);
     res.append(
       "Set-Cookie",
       `${cookieName}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure ? "; Secure" : ""}`,
@@ -325,7 +393,7 @@ export function createSwiggyRouter(deps: SwiggyDeps): Router {
     res.status(500).json({ error: "internal_error" });
   });
 
-  const sweeper = setInterval(() => store.sweep(), 60_000);
+  const sweeper = setInterval(() => { void Promise.resolve(store.sweep()).catch(() => log("swiggy_store_sweep_failed")); }, 60_000);
   sweeper.unref();
 
   return router;
