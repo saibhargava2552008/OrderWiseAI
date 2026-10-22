@@ -209,6 +209,3 @@ startServer().catch(async (error: unknown) => {
   await closeMongo().catch(() => undefined);
   process.exitCode = 1;
 });
-  await closeMongo().catch(() => undefined);
-  process.exitCode = 1;
-});
