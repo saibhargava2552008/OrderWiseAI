@@ -4,44 +4,29 @@ import express from "express";
 import helmet from "helmet";
 import { randomBytes } from "node:crypto";
 import { mountFrontend } from "./frontend.js";
+import { connectMongo, closeMongo } from "./db/mongodb.js";
+import {
+  DuplicateMemberNameError,
+  GroupSessionNotFoundError,
+  MemoryGroupSessionStore,
+  MongoGroupSessionStore,
+  type GroupSessionStore,
+} from "./db/group-sessions.js";
+import { MongoSwiggyStore } from "./swiggy/mongo-store.js";
+import { mountSwiggyAuth } from "./swiggy/index.js";
 
 const app = express();
 const port = Number(process.env.PORT ?? 3000);
 
-type Member = {
-  id: string;
-  name: string;
-  dietaryPreference: "veg" | "non-veg" | "both";
-  cuisines: string[];
-  spendingLimit: number;
-};
-
-type Session = {
-  code: string;
-  title: string;
-  location: string;
-  budget: number;
-  createdAt: string;
-  members: Member[];
-};
-
-const sessions = new Map<string, Session>();
+const useMongo =
+  process.env.NODE_ENV === "production" ||
+  process.env.PERSISTENCE_MODE?.trim().toLowerCase() === "mongodb";
 
 app.disable("x-powered-by");
 app.use(helmet());
 app.use(express.json({ limit: "20kb" }));
 
-mountFrontend(app);
-
-function createSessionCode(): string {
-  let code = "";
-
-  do {
-    code = randomBytes(3).toString("hex").toUpperCase();
-  } while (sessions.has(code));
-
-  return code;
-}
+const memoryGroupStore = new MemoryGroupSessionStore();
 
 function validText(value: unknown, maxLength: number): value is string {
   return (
@@ -66,123 +51,154 @@ app.get("/health", (_req, res) => {
     status: "ok",
     service: "OrderWise AI",
     integration: "not-connected",
+    persistence: useMongo ? "mongodb" : "memory",
   });
 });
 
-// Create a new group session.
-app.post("/api/sessions", (req, res) => {
-  const {
-    title,
-    location,
-    budget,
-    memberName,
-    spendingLimit,
-  } = req.body ?? {};
+async function startServer(): Promise<void> {
+  let groupStore: GroupSessionStore = memoryGroupStore;
+  let swiggyStore: MongoSwiggyStore | undefined;
 
-  if (
-    !validText(title, 80) ||
-    !validText(location, 120) ||
-    !validBudget(budget) ||
-    !validText(memberName, 50) ||
-    !validBudget(spendingLimit) ||
-    spendingLimit < 50 ||
-    spendingLimit > budget
-  ) {
-    return res.status(400).json({
-      error:
-        "Provide a valid title, location, member name and budget. The per-person limit must be at least ₹50 and cannot exceed the group budget.",
-    });
+  if (useMongo) {
+    // Production must not start with an unavailable persistent database.
+    const db = await connectMongo();
+    groupStore = new MongoGroupSessionStore(db);
+    swiggyStore = await MongoSwiggyStore.create(db);
+    console.log(JSON.stringify({ event: "mongodb_persistence_ready" }));
   }
 
-  const code = createSessionCode();
+  mountSwiggyAuth(app, process.env, swiggyStore);
+  mountFrontend(app);
 
-  const session: Session = {
-    code,
-    title: title.trim(),
-    location: location.trim(),
-    budget,
-    createdAt: new Date().toISOString(),
-    members: [
-      {
-        id: randomBytes(8).toString("hex"),
-        name: memberName.trim(),
-        dietaryPreference: "both",
-        cuisines: [],
+  // Create a new group session.
+  app.post("/api/sessions", async (req, res) => {
+    const { title, location, budget, memberName, spendingLimit } =
+      req.body ?? {};
+
+    if (
+      !validText(title, 80) ||
+      !validText(location, 120) ||
+      !validBudget(budget) ||
+      !validText(memberName, 50) ||
+      !validBudget(spendingLimit) ||
+      spendingLimit < 50 ||
+      spendingLimit > budget
+    ) {
+      return res.status(400).json({
+        error:
+          "Provide a valid title, location, member name and budget. The per-person limit must be at least ₹50 and cannot exceed the group budget.",
+      });
+    }
+
+    try {
+      const session = await groupStore.create({
+        title,
+        location,
+        budget,
+        memberName,
         spendingLimit,
-      },
-    ],
+      });
+
+      return res.status(201).json({
+        message: "Session created successfully.",
+        session,
+      });
+    } catch {
+      console.error(
+        JSON.stringify({ event: "group_session_create_failed" }),
+      );
+      return res.status(503).json({
+        error: "session_service_unavailable",
+      });
+    }
+  });
+
+  // Join an existing group using its code.
+  app.post("/api/sessions/join", async (req, res) => {
+    const { code, memberName } = req.body ?? {};
+
+    if (!validText(code, 20) || !validText(memberName, 50)) {
+      return res.status(400).json({
+        error: "Provide a valid session code and member name.",
+      });
+    }
+
+    try {
+      const result = await groupStore.join(
+        code.trim().toUpperCase(),
+        memberName,
+      );
+
+      return res.status(200).json({
+        message: "Joined session successfully.",
+        session: result.session,
+        member: result.member,
+      });
+    } catch (error) {
+      if (error instanceof GroupSessionNotFoundError) {
+        return res.status(404).json({
+          error: "Session not found. Check the code and try again.",
+        });
+      }
+
+      if (error instanceof DuplicateMemberNameError) {
+        return res.status(409).json({
+          error: "That name is already in this session.",
+        });
+      }
+
+      console.error(
+        JSON.stringify({ event: "group_session_join_failed" }),
+      );
+      return res.status(503).json({
+        error: "session_service_unavailable",
+      });
+    }
+  });
+
+  // Retrieve a session by its code.
+  app.get("/api/sessions/:code", async (req, res) => {
+    try {
+      const session = await groupStore.get(req.params.code);
+
+      if (!session) {
+        return res.status(404).json({
+          error: "Session not found.",
+        });
+      }
+
+      return res.status(200).json({ session });
+    } catch {
+      console.error(
+        JSON.stringify({ event: "group_session_read_failed" }),
+      );
+      return res.status(503).json({
+        error: "session_service_unavailable",
+      });
+    }
+  });
+
+  const server = app.listen(port, "0.0.0.0", () => {
+    console.log(`OrderWise AI running on port ${port}`);
+  });
+
+  const shutdown = (signal: string): void => {
+    console.log(JSON.stringify({ event: "server_shutdown", signal }));
+    server.close(() => {
+      void closeMongo()
+        .catch(() => undefined)
+        .finally(() => process.exit(0));
+    });
   };
 
-  sessions.set(code, session);
+  process.once("SIGINT", () => shutdown("SIGINT"));
+  process.once("SIGTERM", () => shutdown("SIGTERM"));
+}
 
-  return res.status(201).json({
-    message: "Session created successfully.",
-    session,
-  });
-});
-
-// Join an existing group using its code.
-app.post("/api/sessions/join", (req, res) => {
-  const { code, memberName } = req.body ?? {};
-
-  if (!validText(code, 20) || !validText(memberName, 50)) {
-    return res.status(400).json({
-      error: "Provide a valid session code and member name.",
-    });
-  }
-
-  const session = sessions.get(code.trim().toUpperCase());
-
-  if (!session) {
-    return res.status(404).json({
-      error: "Session not found. Check the code and try again.",
-    });
-  }
-
-  const normalizedName = memberName.trim();
-
-  if (
-    session.members.some(
-      (member) =>
-        member.name.toLowerCase() === normalizedName.toLowerCase(),
-    )
-  ) {
-    return res.status(409).json({
-      error: "That name is already in this session.",
-    });
-  }
-
-  const member: Member = {
-    id: randomBytes(8).toString("hex"),
-    name: normalizedName,
-    dietaryPreference: "both",
-    cuisines: [],
-    spendingLimit: session.budget,
-  };
-
-  session.members.push(member);
-
-  return res.status(200).json({
-    message: "Joined session successfully.",
-    session,
-    member,
-  });
-});
-
-// Retrieve a session by its code.
-app.get("/api/sessions/:code", (req, res) => {
-  const code = req.params.code.toUpperCase();
-  const session = sessions.get(code);
-
-  if (!session) {
-    return res.status(404).json({
-      error: "Session not found.",
-    });
-  }
-
-  return res.status(200).json({ session });
-});
-
-app.listen(port, "0.0.0.0", () => {
-  console.log(`OrderWise AI running on port ${port}`);
+startServer().catch(async () => {
+  console.error(
+    JSON.stringify({ event: "server_start_failed" }),
+  );
+  await closeMongo().catch(() => undefined);
+  process.exitCode = 1;
 });

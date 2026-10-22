@@ -14,6 +14,7 @@ import { renderPlanList } from "./ui/plans.js";
 import { initDialogs } from "./ui/dialogs.js";
 import { showToast } from "./ui/toast.js";
 import { generateSmartBasket } from "./lib/basket.js";
+import { initSwiggy } from "./ui/swiggy.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -216,5 +217,9 @@ function showFatal(error) {
     ),
   );
 }
+
+initSwiggy().catch(() => {
+  // The status control is optional. The group planner keeps working without it.
+});
 
 boot().catch(showFatal);

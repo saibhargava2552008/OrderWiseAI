@@ -43,10 +43,11 @@
           </svg>
           <span class="brand__name">OrderWise AI</span>
         </a>
-        <p class="status-chip">
+        <p class="status-chip" id="swiggy-status" role="status">
           <span class="status-chip__dot" aria-hidden="true"></span>
-          Swiggy not connected
+          <span id="swiggy-status-text">Swiggy not connected</span>
         </p>
+        <div class="swiggy-actions" id="swiggy-actions"></div>
         <div class="top__actions">
           <button type="button" class="btn btn--secondary" id="open-join">Join session</button>
           <button type="button" class="btn btn--primary" id="open-new">New session</button>
@@ -58,8 +59,11 @@
       <p class="shell">
         <svg class="icon" aria-hidden="true" focusable="false"><use href="#i-info" /></svg>
         <span>
-          <strong>Demo data.</strong> Every restaurant, dish, price, rating and delivery time on this page is made up.
-          OrderWise AI isn't connected to Swiggy yet, and it can't place orders.
+          <strong>Demo data.</strong>
+          <span id="notice-text">
+            Every restaurant, dish, price, rating and delivery time on this page is made up.
+            OrderWise AI isn't connected to Swiggy yet, and it can't place orders.
+          </span>
         </span>
       </p>
     </div>

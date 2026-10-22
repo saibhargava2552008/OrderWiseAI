@@ -156,6 +156,27 @@ select {
   border: 2px solid var(--ink-soft);
 }
 
+/* Shown only after a real Swiggy request has succeeded. */
+.status-chip--ok {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
+.status-chip--ok .status-chip__dot {
+  border-color: var(--ok);
+  background: var(--ok);
+}
+
+.swiggy-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+a.btn {
+  text-decoration: none;
+}
+
 .top__actions {
   display: flex;
   flex-wrap: wrap;
