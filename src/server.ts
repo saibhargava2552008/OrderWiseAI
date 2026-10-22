@@ -195,10 +195,20 @@ async function startServer(): Promise<void> {
   process.once("SIGTERM", () => shutdown("SIGTERM"));
 }
 
-startServer().catch(async () => {
+startServer().catch(async (error: unknown) => {
   console.error(
-    JSON.stringify({ event: "server_start_failed" }),
+    JSON.stringify({
+      event: "server_start_failed",
+      error:
+        error instanceof Error
+          ? error.message
+          : String(error),
+    }),
   );
+
+  await closeMongo().catch(() => undefined);
+  process.exitCode = 1;
+});
   await closeMongo().catch(() => undefined);
   process.exitCode = 1;
 });
